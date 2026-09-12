@@ -136,6 +136,9 @@ Copy-Item src/main/resources/plugin.yml, src/main/resources/config.yml build/cla
 jar --create --file build/mapgate-1.0.0.jar --main-class com.cinaptic.mapgate.MapGatePlugin -C build/classes .
 ```
 
+## Changelog
+See [CHANGELOG.md](CHANGELOG.md).
+
 ## Author
 Randall Morse (cinaptic) ([randymorse@gmail.com](mailto:randymorse@gmail.com))
 
