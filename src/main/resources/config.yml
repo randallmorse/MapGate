@@ -1,0 +1,40 @@
+# Password required to get in. Change it in-game/console with:
+#   /mapgate setpassword <new password>
+# (preferred over editing this file, since that also works without a restart)
+#
+# NOTE: while this is still the literal default value below ("changeme"),
+# MapGate refuses to let anyone in at all and shows a setup-required page
+# instead - see the README.
+password: "changeme"
+
+# --- Ports ---
+# MapGate sits BETWEEN visitors and the actual web service you're protecting
+# (BlueMap, Dynmap, or any other plugin/app with its own embedded webserver
+# and no login of its own). There are two separate ports involved:
+#
+# 1. target-host / target-port: where THAT backend service is actually
+#    listening. It should be configured (in its OWN config) to bind only to
+#    127.0.0.1, so it is not reachable from outside at all - only MapGate,
+#    sitting in front of it, is externally reachable. Point these two
+#    settings at whatever port you moved it to.
+#
+# 2. public-port: the port MapGate itself listens on. This is the one you
+#    actually open/allocate in your host's firewall, and the one visitors
+#    browse to. It can be the same port number your backend service used to
+#    expose publicly before you moved it to loopback-only - nothing changes
+#    for visitors except now seeing a login page first.
+target-host: "127.0.0.1"
+target-port: 8101
+public-port: 8100
+
+# How long a login lasts before the password is required again.
+session-duration-hours: 12
+
+cookie-name: "mapgate_session"
+
+# If a visitor's request doesn't look like it came through a TLS-terminating
+# proxy (no X-Forwarded-Proto: https, CF-Visitor https, or Front-End-Https: on
+# header), the login page shows a warning that their password would be sent
+# in plain text, linking here. This is a best-effort notice only, not a
+# security control - see SECURITY.md in the project repo for why.
+insecure-connection-warning-url: "https://github.com/randallmorse/MapGate/blob/main/SECURITY.md"
