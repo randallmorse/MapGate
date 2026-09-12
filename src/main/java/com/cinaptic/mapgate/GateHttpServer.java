@@ -46,7 +46,7 @@ final class GateHttpServer {
     private final String defaultPasswordMode;
     private final List<String> ipAllowList;
     private final List<String> ipBlockList;
-    private final boolean trustForwardedFor;
+    private final boolean trustProxyHeaders;
 
     GateHttpServer(MapGatePlugin plugin) throws IOException {
         this.plugin = plugin;
@@ -58,7 +58,7 @@ final class GateHttpServer {
         this.defaultPasswordMode = plugin.getConfig().getString("default-password-mode", "block");
         this.ipAllowList = plugin.getConfig().getStringList("ip-allow-list");
         this.ipBlockList = plugin.getConfig().getStringList("ip-block-list");
-        this.trustForwardedFor = plugin.getConfig().getBoolean("trust-x-forwarded-for", false);
+        this.trustProxyHeaders = plugin.getConfig().getBoolean("trust-proxy-headers", false);
         long durationHours = plugin.getConfig().getLong("session-duration-hours", 12);
         this.sessions = new SessionManager(durationHours * 3600);
 
@@ -164,13 +164,13 @@ final class GateHttpServer {
     /**
      * The actual TCP peer address by default - not spoofable. Only trusts
      * X-Forwarded-For (the leftmost/original-client entry) when
-     * trust-x-forwarded-for is explicitly enabled, which is only safe if
+     * trust-proxy-headers is explicitly enabled, which is only safe if
      * MapGate's public port is firewalled to reject direct connections from
      * anyone but the trusted reverse proxy setting that header - see
      * SECURITY.md.
      */
     private InetAddress resolveClientAddress(HttpExchange exchange) {
-        if (trustForwardedFor) {
+        if (trustProxyHeaders) {
             String forwardedFor = firstHeader(exchange, "X-Forwarded-For");
             if (forwardedFor != null && !forwardedFor.isBlank()) {
                 try {
@@ -323,18 +323,27 @@ final class GateHttpServer {
     }
 
     /**
-     * True if this request is genuinely TLS-encrypted, either because MapGate
-     * terminated it itself (tls-enabled: true) or - a best-effort heuristic
-     * only, not a security boundary - because a reverse proxy (Cloudflare,
-     * Nginx, etc.) that terminated TLS for the visitor set one of a few
-     * well-known headers, which a client could otherwise forge directly.
-     * The heuristic exists to catch honest mistakes (a visitor hitting the
-     * raw HTTP port), not to stop anyone determined to bypass it - see
-     * SECURITY.md.
+     * True if this request is genuinely TLS-encrypted because MapGate
+     * terminated it itself (tls-enabled: true) - always trusted, since
+     * MapGate can be certain about its own listener. Otherwise, only trusts
+     * the well-known proxy-set headers (X-Forwarded-Proto, CF-Visitor,
+     * Front-End-Https) when trust-proxy-headers is explicitly enabled: these
+     * are ordinary HTTP headers a client could forge directly to suppress the
+     * plain-HTTP warning, so - same as the IP allow/block-list matching in
+     * resolveClientAddress - they're only trusted at all once the admin has
+     * opted in, ideally after firewalling the public port to reject direct
+     * connections from anyone but the trusted proxy. See SECURITY.md. With
+     * trust-proxy-headers left false (the default), a visitor behind an
+     * unconfigured reverse proxy will still see the plain-HTTP warning even
+     * though the visitor-to-proxy hop is actually encrypted - a false
+     * positive that's the deliberately safe side to fail on.
      */
     private boolean looksLikeSecureProxy(HttpExchange exchange) {
         if (exchange instanceof HttpsExchange) {
             return true;
+        }
+        if (!trustProxyHeaders) {
+            return false;
         }
         String forwardedProto = firstHeader(exchange, "X-Forwarded-Proto");
         if (forwardedProto != null && forwardedProto.toLowerCase().contains("https")) {

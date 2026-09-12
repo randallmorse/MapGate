@@ -4,18 +4,17 @@
 
 By default, MapGate's built-in HTTP server does not perform TLS/SSL itself — it only speaks plain HTTP, unless you turn on `tls-enabled` (see below) or put a TLS-terminating proxy in front. Over plain HTTP, if you browse to MapGate directly (`http://your-server-ip:8100`), the password you type is sent over the network **unencrypted**, readable by anything positioned between your browser and the server (your ISP, a shared/public Wi-Fi network, etc.).
 
-If you instead reach it through a proxy that terminates TLS for you — for example [Cloudflare](https://www.cloudflare.com/) sitting in front with your own domain — the visitor-to-Cloudflare hop is encrypted, even though the Cloudflare-to-MapGate hop behind it is still plain HTTP (which is fine, since that hop typically stays on the open internet only briefly between two known endpoints, or can be tunneled privately).
+If you instead reach it through a proxy that terminates TLS for you — for example [Cloudflare](https://www.cloudflare.com/) sitting in front with your own domain — the visitor-to-Cloudflare hop is encrypted, even though the Cloudflare-to-MapGate hop behind it is still plain HTTP (which is fine, since that hop typically stays on the open internet only briefly between two known endpoints, or can be tunneled privately). By default, though, MapGate has no way to know that hop happened at all - see below.
 
-To help you avoid accidentally typing your password into an unencrypted connection, the login page shows a warning banner when it can't detect signs of a secure proxy in front of it.
+To help you avoid accidentally typing your password into an unencrypted connection, the login page shows a warning banner whenever it can't confirm the connection is secure.
 
 ## How the detection works — and its limits
 
-If `tls-enabled: true`, MapGate knows for certain the connection is encrypted (it terminated the TLS itself) and never shows the warning - no heuristic needed there. Otherwise, the warning triggers based on the *absence* of headers a TLS-terminating proxy normally adds:
-- `X-Forwarded-Proto: https`
-- Cloudflare's `CF-Visitor` header with `"scheme":"https"`
-- `Front-End-Https: on`
+If `tls-enabled: true`, MapGate knows for certain the connection is encrypted (it terminated the TLS itself) and never shows the warning - no heuristic needed there, and nothing below applies.
 
-**This is a best-effort heuristic, not a security boundary.** These are ordinary HTTP headers — anyone (including a malicious client) can send them directly to MapGate to suppress the warning, since MapGate has no way to cryptographically verify that a real TLS-terminating proxy actually sat in front of the request. The warning exists purely to catch the *honest* mistake of a visitor browsing straight to the raw port without realizing it's unencrypted. It does nothing to stop someone who already intends to intercept traffic.
+Otherwise, MapGate could *try* to infer TLS termination from headers a reverse proxy normally adds (`X-Forwarded-Proto: https`, Cloudflare's `CF-Visitor` with `"scheme":"https"`, `Front-End-Https: on`) - but **it does not, unless you explicitly enable `trust-proxy-headers`** (default `false`). These are ordinary HTTP headers; anyone, including a malicious client, can send them directly to MapGate to suppress the warning, since MapGate has no way to cryptographically verify that a real TLS-terminating proxy actually sat in front of the request. Rather than trust them unconditionally and let the warning be silently spoofed away, MapGate defaults to ignoring them entirely - meaning if you *do* have a working reverse proxy in front but haven't opted in, visitors will see the warning anyway even though their connection is genuinely encrypted. That false positive is the deliberately safe direction to fail in.
+
+If you enable `trust-proxy-headers: true`, the warning banner (and the IP allow/block lists - see below) will honor those headers instead. This is only sound if you've separately made sure MapGate's public port cannot be reached directly by anyone except your trusted proxy (e.g. a firewall rule permitting only the proxy's known IP ranges) - otherwise anyone who can connect directly can forge the headers and suppress the warning regardless of whether a real proxy exists at all.
 
 ## What actually protects the password
 
@@ -37,12 +36,12 @@ When you set `tls-enabled: true`, MapGate generates its own self-signed certific
 
 If you'd rather avoid the untrusted-certificate warning entirely, MapGate can also load a real CA-issued certificate instead of self-signing one — see [Using your own certificate](README.md#using-your-own-certificate-instead-of-self-signed--unconfirmed) in the README (currently unconfirmed/untested).
 
-## IP allow/block lists and `trust-x-forwarded-for`
+## IP allow/block lists and `trust-proxy-headers`
 
 `ip-allow-list` is a real access-control bypass — anyone matching it skips the password entirely. By default, matching is done against the actual TCP connection's source address, which **cannot be spoofed**: a client cannot make their own socket appear to originate from a different IP.
 
-If you enable `trust-x-forwarded-for: true` (for example, because MapGate sits behind Cloudflare or another reverse proxy that connects to it locally, and you want allow/block-listing to see the *original* visitor's IP instead of the proxy's), be aware that `X-Forwarded-For` is just an ordinary HTTP header. **Anyone who can connect directly to MapGate's public port can set this header to whatever they want** — including an IP from your allow-list — and walk straight past the password.
+If you enable `trust-proxy-headers: true` (for example, because MapGate sits behind Cloudflare or another reverse proxy that connects to it locally, and you want allow/block-listing to see the *original* visitor's IP instead of the proxy's), be aware that `X-Forwarded-For` is just an ordinary HTTP header. **Anyone who can connect directly to MapGate's public port can set this header to whatever they want** — including an IP from your allow-list — and walk straight past the password.
 
-This setting is only safe to enable if you have separately ensured MapGate's public port cannot be reached directly by anyone except your trusted proxy — for example, a firewall rule that only permits inbound connections to that port from your proxy's known IP ranges (Cloudflare publishes theirs). If you can't guarantee that, leave this `false` and accept that allow/block-listing will match your proxy's IP rather than visitors' real IPs.
+`trust-proxy-headers` is a single opt-in covering both this and the plain-HTTP warning banner above, since they're the same underlying trust decision: "do I believe a real proxy, and not a client, set these headers." It's only safe to enable if you have separately ensured MapGate's public port cannot be reached directly by anyone except your trusted proxy — for example, a firewall rule that only permits inbound connections to that port from your proxy's known IP ranges (Cloudflare publishes theirs). If you can't guarantee that, leave this `false` and accept that allow/block-listing will match your proxy's IP rather than visitors' real IPs, and that the plain-HTTP warning may show even when a proxy is genuinely handling TLS for you.
 
 See the main [README](README.md#security-notes--read-before-relying-on-this) for the broader security model (single shared password vs. per-user auth, in-memory sessions, etc.).

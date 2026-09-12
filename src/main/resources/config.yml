@@ -44,9 +44,10 @@ cookie-name: "mapgate_session"
 
 # If a visitor's request doesn't look like it came through a TLS-terminating
 # proxy (no X-Forwarded-Proto: https, CF-Visitor https, or Front-End-Https: on
-# header), the login page shows a warning that their password would be sent
-# in plain text, linking here. This is a best-effort notice only, not a
-# security control - see SECURITY.md in the project repo for why.
+# header - and these headers are only trusted at all if trust-proxy-headers
+# below is enabled), the login page shows a warning that their password would
+# be sent in plain text, linking here. This is a best-effort notice only, not
+# a security control - see SECURITY.md in the project repo for why.
 insecure-connection-warning-url: "https://github.com/randallmorse/MapGate/blob/main/SECURITY.md"
 
 # --- IP allow/block lists ---
@@ -64,17 +65,29 @@ ip-block-list: []
 # for anyone).
 ip-allow-list: []
 
-# The above two lists are matched against the actual TCP connection's source
-# address by default, which cannot be spoofed. If MapGate sits behind a
-# reverse proxy (e.g. Cloudflare) that connects to it locally, that address
-# will be the PROXY's IP instead of the real visitor's - breaking allow/block
-# matching. Set this to true to instead trust the X-Forwarded-For header for
-# that matching, but ONLY if you have made sure MapGate's public port cannot
-# be reached directly by anyone except that trusted proxy (e.g. via a
-# firewall rule allowing only the proxy's IPs) - this header is trivially
-# spoofable by anyone who CAN connect directly, which would let them fake
-# their way onto the allow-list. See SECURITY.md.
-trust-x-forwarded-for: false
+# --- Trusting a reverse proxy (e.g. Cloudflare) ---
+# By default, MapGate does NOT trust any header a client could set itself:
+#   - The IP allow/block lists above are matched against the actual TCP
+#     connection's source address, not X-Forwarded-For.
+#   - The plain-HTTP warning banner only ever treats a connection as secure
+#     because MapGate itself terminated TLS (tls-enabled: true) - it ignores
+#     X-Forwarded-Proto, CF-Visitor, and Front-End-Https entirely.
+#
+# If MapGate sits behind a reverse proxy (e.g. Cloudflare, Nginx) that
+# terminates TLS for visitors and connects to MapGate locally, that's overly
+# strict: the IP lists would match the PROXY's address instead of the real
+# visitor's, and the plain-HTTP warning would show even though the
+# visitor-to-proxy hop is genuinely encrypted. Setting this to true makes
+# MapGate trust X-Forwarded-For (for the IP lists) and X-Forwarded-Proto /
+# CF-Visitor / Front-End-Https (for the warning banner) instead.
+#
+# This is only safe to enable if you have separately made sure MapGate's
+# public port cannot be reached directly by anyone except that trusted proxy
+# (e.g. a firewall rule allowing only the proxy's known IPs) - every one of
+# these headers is an ordinary, trivially spoofable HTTP header. Anyone who
+# CAN connect directly could otherwise fake their way onto the IP allow-list
+# or silently suppress the plain-HTTP warning. See SECURITY.md.
+trust-proxy-headers: false
 
 # --- Optional self-signed TLS ---
 # When enabled, MapGate serves HTTPS instead of HTTP on public-port, using a
