@@ -1,0 +1,122 @@
+# Password required to get in. Change it in-game/console with:
+#   /mapgate setpassword <new password>
+# (preferred over editing this file, since that also works without a restart)
+#
+# NOTE: while this is still the literal default value below ("changeme"),
+# MapGate's behavior is controlled by default-password-mode below - see the
+# README.
+password: "changeme"
+
+# What happens while `password` above is still the literal default ("changeme"):
+#   "block" (default) - fail closed. No one can log in; visitors see a
+#     setup-required page telling the admin to run /mapgate setpassword.
+#   "warn" - allow the default password to work as a real password (useful
+#     for local demos/dev), but show a persistent warning on the login page
+#     reminding whoever's looking at it to set a real password before this
+#     is exposed for real. This is an explicit opt-in - MapGate never allows
+#     the public default password to work silently.
+default-password-mode: "block"
+
+# --- Ports ---
+# MapGate sits BETWEEN visitors and the actual web service you're protecting
+# (BlueMap, Dynmap, or any other plugin/app with its own embedded webserver
+# and no login of its own). There are two separate ports involved:
+#
+# 1. target-host / target-port: where THAT backend service is actually
+#    listening. It should be configured (in its OWN config) to bind only to
+#    127.0.0.1, so it is not reachable from outside at all - only MapGate,
+#    sitting in front of it, is externally reachable. Point these two
+#    settings at whatever port you moved it to.
+#
+# 2. public-port: the port MapGate itself listens on. This is the one you
+#    actually open/allocate in your host's firewall, and the one visitors
+#    browse to. It can be the same port number your backend service used to
+#    expose publicly before you moved it to loopback-only - nothing changes
+#    for visitors except now seeing a login page first.
+target-host: "127.0.0.1"
+target-port: 8101
+public-port: 8100
+
+# How long a login lasts before the password is required again.
+session-duration-hours: 12
+
+cookie-name: "mapgate_session"
+
+# If a visitor's request doesn't look like it came through a TLS-terminating
+# proxy (no X-Forwarded-Proto: https, CF-Visitor https, or Front-End-Https: on
+# header - and these headers are only trusted at all if trust-proxy-headers
+# below is enabled), the login page shows a warning that their password would
+# be sent in plain text, linking here. This is a best-effort notice only, not
+# a security control - see SECURITY.md in the project repo for why.
+insecure-connection-warning-url: "https://github.com/randallmorse/MapGate/blob/main/SECURITY.md"
+
+# --- IP allow/block lists ---
+# Each entry is a plain IP ("203.0.113.5") or a CIDR range ("203.0.113.0/24").
+# If an address matches both lists, the block-list always wins.
+
+# IPs that are always denied outright (HTTP 403), before anything else is
+# checked - even before the allow-list. Empty by default (nobody blocked).
+ip-block-list: []
+
+# IPs that bypass the password ENTIRELY and go straight through to the
+# proxied service - e.g. your own home/office IP, so you're never stuck
+# behind your own gate. This is a real access-control bypass, not a
+# convenience feature, so use it deliberately. Empty by default (no bypass
+# for anyone).
+ip-allow-list: []
+
+# --- Trusting a reverse proxy (e.g. Cloudflare) ---
+# By default, MapGate does NOT trust any header a client could set itself:
+#   - The IP allow/block lists above are matched against the actual TCP
+#     connection's source address, not X-Forwarded-For.
+#   - The plain-HTTP warning banner only ever treats a connection as secure
+#     because MapGate itself terminated TLS (tls-enabled: true) - it ignores
+#     X-Forwarded-Proto, CF-Visitor, and Front-End-Https entirely.
+#
+# If MapGate sits behind a reverse proxy (e.g. Cloudflare, Nginx) that
+# terminates TLS for visitors and connects to MapGate locally, that's overly
+# strict: the IP lists would match the PROXY's address instead of the real
+# visitor's, and the plain-HTTP warning would show even though the
+# visitor-to-proxy hop is genuinely encrypted. Setting this to true makes
+# MapGate trust X-Forwarded-For (for the IP lists) and X-Forwarded-Proto /
+# CF-Visitor / Front-End-Https (for the warning banner) instead.
+#
+# This is only safe to enable if you have separately made sure MapGate's
+# public port cannot be reached directly by anyone except that trusted proxy
+# (e.g. a firewall rule allowing only the proxy's known IPs) - every one of
+# these headers is an ordinary, trivially spoofable HTTP header. Anyone who
+# CAN connect directly could otherwise fake their way onto the IP allow-list
+# or silently suppress the plain-HTTP warning. See SECURITY.md.
+trust-proxy-headers: false
+
+# --- Optional self-signed TLS ---
+# When enabled, MapGate serves HTTPS instead of HTTP on public-port, using a
+# self-signed certificate it generates itself on first run (via the JDK's
+# bundled keytool - no external tools or manual OpenSSL steps needed). The
+# certificate and its keystore password are saved and reused across restarts,
+# so visitors don't have to re-accept a new "untrusted certificate" browser
+# warning every time the server restarts.
+#
+# This encrypts the connection against passive eavesdropping (e.g. someone
+# sniffing traffic on the same network), which plain HTTP does not. It does
+# NOT provide the same guarantee as a real (CA-issued) certificate: browsers
+# will show a "not trusted" warning, and a determined active
+# man-in-the-middle could present their own self-signed certificate unless a
+# visitor manually verifies the certificate fingerprint. See SECURITY.md.
+tls-enabled: false
+
+# Common Name / Subject Alternative Name for the generated certificate - set
+# this to whatever hostname or IP visitors actually type into their browser
+# (matching it avoids an extra hostname-mismatch warning on top of the
+# untrusted-certificate one).
+tls-common-name: "localhost"
+
+# Where the generated keystore is stored, relative to MapGate's own data
+# folder (plugins/MapGate/). Not normally something you need to change.
+tls-keystore-path: "selfsigned-keystore.p12"
+
+# Auto-generated and saved here the first time tls-enabled is turned on -
+# leave blank, MapGate fills this in itself. To force a brand new
+# certificate (e.g. after changing tls-common-name), use
+# /mapgate regenerate-cert instead of clearing this by hand.
+tls-keystore-password: ""

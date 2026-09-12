@@ -1,0 +1,14 @@
+name: MapGate
+version: '1.0.0'
+main: com.cinaptic.mapgate.MapGatePlugin
+api-version: '26.2'
+author: Randall Morse (cinaptic)
+description: Shared-password gate with cookie sessions in front of any unauthenticated web service (e.g. BlueMap, Dynmap).
+commands:
+  mapgate:
+    description: Manage MapGate settings
+    usage: /<command> <setpassword <pass>|reload|sessions|regenerate-cert>
+    permission: mapgate.admin
+permissions:
+  mapgate.admin:
+    default: op
