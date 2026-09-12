@@ -1,6 +1,6 @@
 # MapGate
 
-A tiny Paper/Bukkit plugin that puts a single shared-password login page in front of a web service that has no login of its own — using a signed session cookie, no reverse proxy/VPS/database required.
+A tiny Paper/Bukkit plugin that puts a single shared-password login page in front of a web service that has no login of its own — using a random server-side session token stored in a cookie, no reverse proxy/VPS/database required.
 
 It was originally built to protect [BlueMap](https://bluemap.bluecolored.de/)'s web map, and that's still the primary use case the docs below walk through. But there's nothing BlueMap-specific about it: **it works with any plugin or app that runs its own embedded webserver and doesn't offer authentication** — [Dynmap](https://github.com/webbukkit/dynmap) is another obvious candidate, or really anything reachable over plain HTTP that you'd rather not leave wide open.
 
@@ -29,8 +29,9 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 ## Features
 - Fails closed while the password is still the packaged default (`changeme`) by default — shows an interstitial explaining how an admin (`mapgate.admin`/op) can fix it via `/mapgate setpassword`. Installs that want the default password to actually work (local demos/dev only) can opt into that explicitly with `default-password-mode: warn`, which shows a persistent warning on the login page instead of blocking it
 - Single shared password, changeable in-game with no restart (`/mapgate setpassword <pass>`)
-- Session cookie (`HttpOnly`, random 256-bit token) with configurable expiry
-- Logout endpoint (`/mapgate/logout`)
+- Session cookie (`HttpOnly`, random 256-bit token, marked `Secure` whenever the connection is actually secure) with configurable expiry
+- Logout endpoint (`/mapgate/logout`), and changing the password (`/mapgate setpassword`) immediately invalidates all existing sessions
+- Basic per-IP login rate limiting (5 failed attempts/minute) to slow down automated password guessing
 - Warns visitors on the login page if their connection doesn't look like it's coming through a secure (HTTPS-terminating) proxy — see [SECURITY.md](SECURITY.md)
 - IP allow-list (bypass the password entirely, e.g. for your own home/office IP) and block-list (always deny, HTTP 403) — block always wins if an address matches both
 - Optional self-signed HTTPS (`tls-enabled: true`) — MapGate generates and reuses its own certificate via the JDK's bundled `keytool`, no external tools needed. Encrypts against passive eavesdropping; still shows a browser trust warning since it's not CA-issued — see [SECURITY.md](SECURITY.md)
@@ -67,12 +68,12 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 | `trust-proxy-headers` | `false` | Whether to trust `X-Forwarded-For` (for IP allow/block matching) and `X-Forwarded-Proto`/`CF-Visitor`/`Front-End-Https` (for the plain-HTTP warning) instead of ignoring them. Only safe if MapGate's public port is firewalled to reject direct connections from anyone but your trusted reverse proxy — see [SECURITY.md](SECURITY.md). |
 | `tls-enabled` | `false` | Serve HTTPS (self-signed) instead of HTTP on `public-port`. See [SECURITY.md](SECURITY.md) for what this does and doesn't protect against. |
 | `tls-common-name` | `localhost` | CN/SAN for the generated certificate — set to whatever hostname/IP visitors actually browse to, to avoid an extra hostname-mismatch warning. |
-| `tls-keystore-path` | `selfsigned-keystore.p12` | Where the generated keystore is stored, relative to `plugins/MapGate/`. |
-| `tls-keystore-password` | *(auto-generated)* | Filled in automatically the first time `tls-enabled` is turned on. Use `/mapgate regenerate-cert` to force a new certificate rather than clearing this by hand. |
+| `tls-keystore-path` | `selfsigned-keystore.p12` | Where the keystore is stored, relative to `plugins/MapGate/`. Auto-generation/regeneration only ever happens at this exact default value — pointing it at a different filename (e.g. for [your own certificate](#using-your-own-certificate-instead-of-self-signed--unconfirmed)) tells MapGate to only ever load that file, never delete or overwrite it. |
+| `tls-keystore-password` | *(auto-generated)* | Filled in automatically the first time `tls-enabled` is turned on, only at the default `tls-keystore-path`. Use `/mapgate regenerate-cert` to force a new certificate rather than clearing this by hand. |
 
 ## Using your own certificate instead of self-signed (⚠ unconfirmed)
 
-> **Status: unconfirmed / untested.** This follows directly from how `tls-keystore-path` and `tls-keystore-password` are implemented (MapGate only auto-generates a certificate when the keystore file is missing *or* the password is blank — otherwise it just loads what's there), but nobody has actually run this end-to-end yet with a real certificate. Treat it as a starting point to try, not a verified guide. If you do try it, consider [opening an issue](https://github.com/randallmorse/MapGate/issues) with how it went either way.
+> **Status: unconfirmed / untested.** This follows directly from how `tls-keystore-path` and `tls-keystore-password` are implemented (MapGate only auto-generates or deletes a certificate at the *default* keystore path — a custom `tls-keystore-path` is only ever loaded, never touched, including by `/mapgate regenerate-cert`), but nobody has actually run this end-to-end yet with a real certificate. Treat it as a starting point to try, not a verified guide. If you do try it, consider [opening an issue](https://github.com/randallmorse/MapGate/issues) with how it went either way.
 
 If you have (or can obtain) a real, CA-issued certificate, you should be able to use it instead of letting MapGate self-sign one:
 
@@ -98,7 +99,7 @@ If you have (or can obtain) a real, CA-issued certificate, you should be able to
 | `/mapgate setpassword <pass>` | `mapgate.admin` (default: op) | Changes the password immediately, no restart needed. |
 | `/mapgate reload` | `mapgate.admin` | Reloads config and restarts MapGate's internal HTTP server. |
 | `/mapgate sessions` | `mapgate.admin` | Shows the number of currently active (unexpired) sessions. |
-| `/mapgate regenerate-cert` | `mapgate.admin` | Deletes and regenerates the self-signed TLS certificate (only relevant if `tls-enabled: true`). Visitors' browsers will need to re-accept the new certificate. |
+| `/mapgate regenerate-cert` | `mapgate.admin` | Deletes and regenerates the self-signed TLS certificate (only relevant if `tls-enabled: true`). Refuses to do anything if `tls-keystore-path` points at a custom (non-default) file, to avoid destroying a user-supplied certificate. Visitors' browsers will need to re-accept the new certificate. |
 
 ## Security notes — read before relying on this
 - **This runs over plain HTTP by default**, unless you turn on `tls-enabled` for self-signed HTTPS, or put something like Cloudflare in front of it *and* also enable `trust-proxy-headers` (off by default - see below). Plain HTTP means the password and session cookie are sent unencrypted — fine for casually keeping randoms out of a hobby server's map, not a substitute for real TLS if that matters to you. The login page shows a warning when it can't confirm the connection is secure — see [SECURITY.md](SECURITY.md) for exactly how that detection works and its limits.
@@ -106,6 +107,8 @@ If you have (or can obtain) a real, CA-issued certificate, you should be able to
 - **One shared password for everyone**, not per-user accounts. If you need access tied to individual Minecraft accounts/permissions, look at [Chicken/Auth](https://github.com/Chicken/Auth) instead (heavier: needs its own reverse proxy + database).
 - Sessions are **in-memory only** — they don't survive a server restart, and there's no persistent session store to worry about securing.
 - The reverse-proxy step buffers each response fully in memory before forwarding it — fine for typical BlueMap tile/asset sizes, not designed for heavy concurrent public traffic.
+- Login attempts are rate-limited per IP (5 failed attempts/minute) as a brute-force speed bump, not a strong guarantee — see [SECURITY.md](SECURITY.md) for its limits (e.g. it's keyed on the same client-address logic as the IP allow/block lists).
+- **Known limitation:** the proxy only forwards a request body for `POST`/`PUT`. A body-bearing `DELETE` reaches the backend with an empty body, and `PATCH` isn't supported at all (a JDK `HttpURLConnection` limitation). Not an issue for BlueMap/Dynmap-style read-mostly services; would need a bigger change (e.g. moving off `HttpURLConnection`) to support arbitrary methods generically.
 
 ## Building from source
 No Gradle/Maven wrapper yet — built directly with `javac` against the Paper API. You'll need:
@@ -113,11 +116,23 @@ No Gradle/Maven wrapper yet — built directly with `javac` against the Paper AP
 - `paper-api` jar for your target Paper version, from https://repo.papermc.io/repository/maven-public/io/papermc/paper/paper-api/
 - Its transitive deps for compiling: `adventure-api`, `adventure-key` (both `net.kyori`, matching the version in paper-api's declared `adventure-bom`), `bungeecord-chat` (`net.md-5`), and `org.jetbrains:annotations`
 
+The classpath separator differs by OS — `:` on Linux/macOS, `;` on Windows:
+
 ```sh
-javac -encoding UTF-8 -cp "paper-api.jar;adventure-api.jar;adventure-key.jar;bungeecord-chat.jar;jetbrains-annotations.jar" \
+# Linux/macOS
+javac -encoding UTF-8 -cp "paper-api.jar:adventure-api.jar:adventure-key.jar:bungeecord-chat.jar:jetbrains-annotations.jar" \
   -d build/classes src/main/java/com/cinaptic/mapgate/*.java
 
 cp src/main/resources/plugin.yml src/main/resources/config.yml build/classes/
+jar --create --file build/mapgate-1.0.0.jar --main-class com.cinaptic.mapgate.MapGatePlugin -C build/classes .
+```
+
+```powershell
+# Windows (PowerShell)
+javac -encoding UTF-8 -cp "paper-api.jar;adventure-api.jar;adventure-key.jar;bungeecord-chat.jar;jetbrains-annotations.jar" `
+  -d build/classes src/main/java/com/cinaptic/mapgate/*.java
+
+Copy-Item src/main/resources/plugin.yml, src/main/resources/config.yml build/classes/
 jar --create --file build/mapgate-1.0.0.jar --main-class com.cinaptic.mapgate.MapGatePlugin -C build/classes .
 ```
 

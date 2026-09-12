@@ -23,15 +23,21 @@ public final class MapGatePlugin extends JavaPlugin {
         stopGateServer();
     }
 
-    private void startGateServer() {
+    /** Returns true if the gate server started successfully - callers (commands) must check this
+     *  rather than assuming success, since a failure here (e.g. a bad TLS keystore, port already
+     *  in use) otherwise gets silently swallowed and reported as a successful reload/regenerate. */
+    private boolean startGateServer() {
         try {
             gateServer = new GateHttpServer(this);
             gateServer.start();
             getLogger().info("MapGate listening on port " + getConfig().getInt("public-port")
                     + ", proxying to " + getConfig().getString("target-host") + ":"
                     + getConfig().getInt("target-port"));
+            return true;
         } catch (IOException e) {
             getLogger().log(Level.SEVERE, "Failed to start MapGate HTTP server", e);
+            gateServer = null;
+            return false;
         }
     }
 
@@ -58,13 +64,20 @@ public final class MapGatePlugin extends JavaPlugin {
                 String newPassword = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
                 getConfig().set("password", newPassword);
                 saveConfig();
-                sender.sendMessage("MapGate password updated.");
+                // A token issued under the old password (or one that leaked) should not keep
+                // working after the password changes - force everyone to log in again.
+                if (gateServer != null) {
+                    gateServer.invalidateAllSessions();
+                }
+                sender.sendMessage("MapGate password updated. Existing sessions were invalidated.");
             }
             case "reload" -> {
                 stopGateServer();
                 reloadConfig();
-                startGateServer();
-                sender.sendMessage("MapGate reloaded.");
+                boolean started = startGateServer();
+                sender.sendMessage(started
+                        ? "MapGate reloaded."
+                        : "MapGate reload FAILED - the gate is currently stopped. See console for details.");
             }
             case "sessions" -> {
                 int count = gateServer == null ? 0 : gateServer.activeSessionCount();
@@ -76,11 +89,21 @@ public final class MapGatePlugin extends JavaPlugin {
                     return true;
                 }
                 stopGateServer();
-                SelfSignedTls.deleteKeystore(this);
+                boolean deleted = SelfSignedTls.deleteKeystore(this);
+                if (!deleted) {
+                    sender.sendMessage("tls-keystore-path is set to a custom (non-default) file - refusing to "
+                            + "delete it, since that's likely your own certificate, not one MapGate generated. "
+                            + "Replace that file yourself if you want a new certificate.");
+                    startGateServer();
+                    return true;
+                }
                 reloadConfig();
-                startGateServer();
-                sender.sendMessage("MapGate's self-signed TLS certificate was regenerated. "
-                        + "Visitors' browsers will need to re-accept the new certificate.");
+                boolean started = startGateServer();
+                sender.sendMessage(started
+                        ? "MapGate's self-signed TLS certificate was regenerated. "
+                                + "Visitors' browsers will need to re-accept the new certificate."
+                        : "Certificate deleted, but MapGate FAILED to restart - the gate is currently stopped. "
+                                + "See console for details.");
             }
             default -> sender.sendMessage("Usage: /mapgate <setpassword <pass>|reload|sessions|regenerate-cert>");
         }

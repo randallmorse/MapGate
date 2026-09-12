@@ -20,6 +20,7 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
 
@@ -35,10 +36,16 @@ final class GateHttpServer {
 
     private static final Pattern COOKIE_SPLIT = Pattern.compile(";\\s*");
     private static final String DEFAULT_PASSWORD = "changeme";
+    private static final int MAX_LOGIN_BODY_BYTES = 8 * 1024;
+    private static final int BACKEND_CONNECT_TIMEOUT_MS = 5_000;
+    private static final int BACKEND_READ_TIMEOUT_MS = 15_000;
+    private static final int GATE_THREAD_POOL_SIZE = 32;
 
     private final MapGatePlugin plugin;
     private final SessionManager sessions;
+    private final LoginRateLimiter loginRateLimiter = new LoginRateLimiter();
     private final HttpServer server;
+    private final ExecutorService executorService;
     private final String cookieName;
     private final String targetHost;
     private final int targetPort;
@@ -65,14 +72,20 @@ final class GateHttpServer {
         int publicPort = plugin.getConfig().getInt("public-port", 8100);
         boolean tlsEnabled = plugin.getConfig().getBoolean("tls-enabled", false);
         if (tlsEnabled) {
-            HttpsServer httpsServer = HttpsServer.create(new InetSocketAddress(publicPort), 0);
+            // Load/validate the certificate BEFORE binding the socket: if this throws,
+            // nothing has been bound yet, so there's no orphaned listener left occupying
+            // the port for a subsequent retry (e.g. /mapgate reload) to trip over.
             SSLContext sslContext = SelfSignedTls.ensureAndLoad(plugin);
+            HttpsServer httpsServer = HttpsServer.create(new InetSocketAddress(publicPort), 0);
             httpsServer.setHttpsConfigurator(new HttpsConfigurator(sslContext));
             this.server = httpsServer;
         } else {
             this.server = HttpServer.create(new InetSocketAddress(publicPort), 0);
         }
-        this.server.setExecutor(Executors.newCachedThreadPool());
+        // Bounded (not cached/unbounded) so a burst of slow/concurrent requests can't spawn
+        // unlimited threads; shut down in stop() so reloads don't leak pools.
+        this.executorService = Executors.newFixedThreadPool(GATE_THREAD_POOL_SIZE);
+        this.server.setExecutor(executorService);
         this.server.createContext("/mapgate/login", this::handleLogin);
         this.server.createContext("/mapgate/logout", this::handleLogout);
         this.server.createContext("/", this::handleRoot);
@@ -84,10 +97,17 @@ final class GateHttpServer {
 
     void stop() {
         server.stop(0);
+        executorService.shutdownNow();
     }
 
     int activeSessionCount() {
         return sessions.activeCount();
+    }
+
+    /** Invalidates every current session - called when the password changes, so a token issued
+     *  under the old password can't keep granting access after the change. */
+    void invalidateAllSessions() {
+        sessions.invalidateAll();
     }
 
     private void handleRoot(HttpExchange exchange) throws IOException {
@@ -132,18 +152,33 @@ final class GateHttpServer {
             serveLoginPage(exchange, false);
             return;
         }
-        String body = readBody(exchange);
+        if (loginRateLimiter.isLocked(client)) {
+            sendTooManyRequests(exchange);
+            return;
+        }
+
+        String body;
+        try {
+            body = readBody(exchange, MAX_LOGIN_BODY_BYTES);
+        } catch (BodyTooLargeException e) {
+            exchange.sendResponseHeaders(413, -1);
+            exchange.close();
+            return;
+        }
         String submitted = parseFormValue(body, "password");
         String configured = plugin.getConfig().getString("password", "");
 
         if (submitted != null && !configured.isEmpty() && constantTimeEquals(submitted, configured)) {
+            loginRateLimiter.recordSuccess(client);
             String token = sessions.createSession();
-            exchange.getResponseHeaders().add("Set-Cookie",
-                    cookieName + "=" + token + "; Path=/; HttpOnly; Max-Age=" + sessions.sessionDurationSeconds() + "; SameSite=Lax");
+            String cookieAttributes = "; Path=/; HttpOnly; Max-Age=" + sessions.sessionDurationSeconds()
+                    + "; SameSite=Lax" + (looksLikeSecureProxy(exchange) ? "; Secure" : "");
+            exchange.getResponseHeaders().add("Set-Cookie", cookieName + "=" + token + cookieAttributes);
             exchange.getResponseHeaders().add("Location", "/");
             exchange.sendResponseHeaders(302, -1);
             exchange.close();
         } else {
+            loginRateLimiter.recordFailure(client);
             serveLoginPage(exchange, true);
         }
     }
@@ -163,18 +198,26 @@ final class GateHttpServer {
 
     /**
      * The actual TCP peer address by default - not spoofable. Only trusts
-     * X-Forwarded-For (the leftmost/original-client entry) when
-     * trust-proxy-headers is explicitly enabled, which is only safe if
-     * MapGate's public port is firewalled to reject direct connections from
-     * anyone but the trusted reverse proxy setting that header - see
-     * SECURITY.md.
+     * X-Forwarded-For when trust-proxy-headers is explicitly enabled, which
+     * is only safe if MapGate's public port is firewalled to reject direct
+     * connections from anyone but the trusted reverse proxy setting that
+     * header - see SECURITY.md.
+     *
+     * Uses the RIGHTMOST entry, not the leftmost: well-behaved proxies APPEND
+     * the address they received the connection from, rather than overwrite
+     * the header, so the rightmost entry is the one your own trusted proxy
+     * added - i.e. whoever actually connected to it. The leftmost entries can
+     * be arbitrary values a client supplied itself before ever reaching the
+     * proxy. This assumes a single trusted proxy hop; a chain of multiple
+     * trusted proxies isn't accounted for.
      */
     private InetAddress resolveClientAddress(HttpExchange exchange) {
         if (trustProxyHeaders) {
             String forwardedFor = firstHeader(exchange, "X-Forwarded-For");
             if (forwardedFor != null && !forwardedFor.isBlank()) {
+                String[] hops = forwardedFor.split(",");
                 try {
-                    return InetAddress.getByName(forwardedFor.split(",")[0].trim());
+                    return InetAddress.getByName(hops[hops.length - 1].trim());
                 } catch (UnknownHostException ignored) {
                     // fall through to the raw socket address
                 }
@@ -214,7 +257,11 @@ final class GateHttpServer {
             if (clientBytes.length != networkBytes.length) {
                 return false; // one's IPv4, the other IPv6 - never matches
             }
-            int prefixLength = parts.length == 2 ? Integer.parseInt(parts[1]) : clientBytes.length * 8;
+            int addressBits = clientBytes.length * 8;
+            int prefixLength = parts.length == 2 ? Integer.parseInt(parts[1]) : addressBits;
+            if (prefixLength < 0 || prefixLength > addressBits) {
+                return false; // malformed prefix (e.g. negative) - never matches, never "matches everything"
+            }
             int fullBytes = prefixLength / 8;
             int remainingBits = prefixLength % 8;
             for (int i = 0; i < fullBytes; i++) {
@@ -238,6 +285,16 @@ final class GateHttpServer {
         byte[] bytes = "Forbidden".getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().add("Content-Type", "text/plain; charset=utf-8");
         exchange.sendResponseHeaders(403, bytes.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(bytes);
+        }
+    }
+
+    private void sendTooManyRequests(HttpExchange exchange) throws IOException {
+        byte[] bytes = "Too many failed login attempts from this address - try again in a minute."
+                .getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", "text/plain; charset=utf-8");
+        exchange.sendResponseHeaders(429, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);
         }
@@ -369,6 +426,8 @@ final class GateHttpServer {
     private void proxy(HttpExchange exchange) throws IOException {
         String target = "http://" + targetHost + ":" + targetPort + exchange.getRequestURI().toString();
         HttpURLConnection conn = (HttpURLConnection) URI.create(target).toURL().openConnection();
+        conn.setConnectTimeout(BACKEND_CONNECT_TIMEOUT_MS);
+        conn.setReadTimeout(BACKEND_READ_TIMEOUT_MS);
         conn.setRequestMethod(exchange.getRequestMethod());
         conn.setInstanceFollowRedirects(false);
         for (var header : exchange.getRequestHeaders().entrySet()) {
@@ -390,12 +449,22 @@ final class GateHttpServer {
         }
 
         int status;
-        InputStream responseStream;
         try {
             status = conn.getResponseCode();
+        } catch (IOException e) {
+            // A true connection failure (backend down/unreachable) - nothing to salvage, 502 and stop.
+            exchange.sendResponseHeaders(502, -1);
+            exchange.close();
+            return;
+        }
+
+        InputStream responseStream;
+        try {
             responseStream = conn.getInputStream();
         } catch (IOException e) {
-            status = conn.getResponseCode();
+            // getResponseCode() above already succeeded, so this is a non-2xx HTTP response from the
+            // backend (e.g. its own 404/500) - relay its real status/body via the error stream instead
+            // of masking it as a generic 502.
             responseStream = conn.getErrorStream();
             if (responseStream == null) {
                 exchange.sendResponseHeaders(502, -1);
@@ -437,10 +506,27 @@ final class GateHttpServer {
         return null;
     }
 
-    private String readBody(HttpExchange exchange) throws IOException {
+    private static final class BodyTooLargeException extends IOException {
+        BodyTooLargeException(String message) {
+            super(message);
+        }
+    }
+
+    /** Reads the request body, rejecting anything over maxBytes rather than buffering it unbounded
+     *  in memory - important here since this is called from the unauthenticated login endpoint. */
+    private String readBody(HttpExchange exchange, int maxBytes) throws IOException {
         try (InputStream is = exchange.getRequestBody()) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
-            is.transferTo(out);
+            byte[] buffer = new byte[4096];
+            int total = 0;
+            int read;
+            while ((read = is.read(buffer)) != -1) {
+                total += read;
+                if (total > maxBytes) {
+                    throw new BodyTooLargeException("Request body exceeded " + maxBytes + " bytes");
+                }
+                out.write(buffer, 0, read);
+            }
             return out.toString(StandardCharsets.UTF_8);
         }
     }

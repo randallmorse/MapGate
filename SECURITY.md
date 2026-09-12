@@ -42,6 +42,20 @@ If you'd rather avoid the untrusted-certificate warning entirely, MapGate can al
 
 If you enable `trust-proxy-headers: true` (for example, because MapGate sits behind Cloudflare or another reverse proxy that connects to it locally, and you want allow/block-listing to see the *original* visitor's IP instead of the proxy's), be aware that `X-Forwarded-For` is just an ordinary HTTP header. **Anyone who can connect directly to MapGate's public port can set this header to whatever they want** — including an IP from your allow-list — and walk straight past the password.
 
+When this is enabled, MapGate reads the **rightmost** entry in `X-Forwarded-For`, not the leftmost. A well-behaved proxy appends the address it received the connection from, rather than overwriting the header — so the rightmost entry is the one *your* trusted proxy actually added, and everything to its left can be arbitrary values a client supplied itself before ever reaching that proxy. This assumes a single trusted proxy hop directly in front of MapGate; a chain of multiple trusted proxies isn't accounted for.
+
 `trust-proxy-headers` is a single opt-in covering both this and the plain-HTTP warning banner above, since they're the same underlying trust decision: "do I believe a real proxy, and not a client, set these headers." It's only safe to enable if you have separately ensured MapGate's public port cannot be reached directly by anyone except your trusted proxy — for example, a firewall rule that only permits inbound connections to that port from your proxy's known IP ranges (Cloudflare publishes theirs). If you can't guarantee that, leave this `false` and accept that allow/block-listing will match your proxy's IP rather than visitors' real IPs, and that the plain-HTTP warning may show even when a proxy is genuinely handling TLS for you.
+
+## Login rate limiting
+
+MapGate allows at most 5 failed login attempts per IP per rolling 60-second window (using the same client-address logic described above — the raw TCP source by default, or the rightmost `X-Forwarded-For` hop if `trust-proxy-headers` is enabled), rejecting further attempts with `429 Too Many Requests` until the window clears. This is a speed bump against automated password guessing, not a strong guarantee — a distributed attacker using many different source addresses isn't meaningfully slowed down by a per-IP limit. It exists to raise the cost of casual brute-forcing, not to make a weak password safe.
+
+## The `Secure` cookie attribute
+
+The session cookie is marked `Secure` whenever the connection is confirmed encrypted (MapGate's own TLS, or a trusted proxy header per `trust-proxy-headers`) and left unmarked otherwise. A `Secure` cookie is never sent by the browser over a plain HTTP connection, even to the same host - this matters if the same MapGate instance is ever reachable over both HTTP and HTTPS (e.g. mid-migration), since without this a session token issued over HTTPS could otherwise still leak in the clear over a subsequent HTTP request to the same host.
+
+## Custom TLS keystores are never auto-managed
+
+`/mapgate regenerate-cert` and the automatic first-run certificate generation both only ever touch the keystore at the *default* `tls-keystore-path` (`selfsigned-keystore.p12`). If you've pointed `tls-keystore-path` at a different file — per [Using your own certificate](README.md#using-your-own-certificate-instead-of-self-signed--unconfirmed) — MapGate will only ever attempt to *load* it, and `regenerate-cert` refuses to delete it. This exists specifically so a custom, CA-issued certificate can't be silently destroyed and replaced with a self-signed one by a command meant for the default case.
 
 See the main [README](README.md#security-notes--read-before-relying-on-this) for the broader security model (single shared password vs. per-user auth, in-memory sessions, etc.).
