@@ -2,7 +2,11 @@ package com.cinaptic.mapgate;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsExchange;
+import com.sun.net.httpserver.HttpsServer;
 
+import javax.net.ssl.SSLContext;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -59,7 +63,15 @@ final class GateHttpServer {
         this.sessions = new SessionManager(durationHours * 3600);
 
         int publicPort = plugin.getConfig().getInt("public-port", 8100);
-        this.server = HttpServer.create(new InetSocketAddress(publicPort), 0);
+        boolean tlsEnabled = plugin.getConfig().getBoolean("tls-enabled", false);
+        if (tlsEnabled) {
+            HttpsServer httpsServer = HttpsServer.create(new InetSocketAddress(publicPort), 0);
+            SSLContext sslContext = SelfSignedTls.ensureAndLoad(plugin);
+            httpsServer.setHttpsConfigurator(new HttpsConfigurator(sslContext));
+            this.server = httpsServer;
+        } else {
+            this.server = HttpServer.create(new InetSocketAddress(publicPort), 0);
+        }
         this.server.setExecutor(Executors.newCachedThreadPool());
         this.server.createContext("/mapgate/login", this::handleLogin);
         this.server.createContext("/mapgate/logout", this::handleLogout);
@@ -311,13 +323,19 @@ final class GateHttpServer {
     }
 
     /**
-     * Best-effort heuristic only, not a security boundary: these headers are
-     * set by a reverse proxy (Cloudflare, Nginx, etc.) that terminated TLS
-     * for the visitor, but a client could forge them directly. It exists to
-     * catch honest mistakes (a visitor hitting the raw HTTP port), not to
-     * stop anyone determined to bypass it - see SECURITY.md.
+     * True if this request is genuinely TLS-encrypted, either because MapGate
+     * terminated it itself (tls-enabled: true) or - a best-effort heuristic
+     * only, not a security boundary - because a reverse proxy (Cloudflare,
+     * Nginx, etc.) that terminated TLS for the visitor set one of a few
+     * well-known headers, which a client could otherwise forge directly.
+     * The heuristic exists to catch honest mistakes (a visitor hitting the
+     * raw HTTP port), not to stop anyone determined to bypass it - see
+     * SECURITY.md.
      */
     private boolean looksLikeSecureProxy(HttpExchange exchange) {
+        if (exchange instanceof HttpsExchange) {
+            return true;
+        }
         String forwardedProto = firstHeader(exchange, "X-Forwarded-Proto");
         if (forwardedProto != null && forwardedProto.toLowerCase().contains("https")) {
             return true;

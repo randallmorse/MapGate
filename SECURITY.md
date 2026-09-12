@@ -2,7 +2,7 @@
 
 ## The plain-text password warning
 
-MapGate's built-in HTTP server does not perform TLS/SSL itself — it only speaks plain HTTP. If you browse to it directly (`http://your-server-ip:8100`), the password you type is sent over the network **unencrypted**, readable by anything positioned between your browser and the server (your ISP, a shared/public Wi-Fi network, etc.).
+By default, MapGate's built-in HTTP server does not perform TLS/SSL itself — it only speaks plain HTTP, unless you turn on `tls-enabled` (see below) or put a TLS-terminating proxy in front. Over plain HTTP, if you browse to MapGate directly (`http://your-server-ip:8100`), the password you type is sent over the network **unencrypted**, readable by anything positioned between your browser and the server (your ISP, a shared/public Wi-Fi network, etc.).
 
 If you instead reach it through a proxy that terminates TLS for you — for example [Cloudflare](https://www.cloudflare.com/) sitting in front with your own domain — the visitor-to-Cloudflare hop is encrypted, even though the Cloudflare-to-MapGate hop behind it is still plain HTTP (which is fine, since that hop typically stays on the open internet only briefly between two known endpoints, or can be tunneled privately).
 
@@ -10,7 +10,7 @@ To help you avoid accidentally typing your password into an unencrypted connecti
 
 ## How the detection works — and its limits
 
-The warning triggers based on the *absence* of headers a TLS-terminating proxy normally adds:
+If `tls-enabled: true`, MapGate knows for certain the connection is encrypted (it terminated the TLS itself) and never shows the warning - no heuristic needed there. Otherwise, the warning triggers based on the *absence* of headers a TLS-terminating proxy normally adds:
 - `X-Forwarded-Proto: https`
 - Cloudflare's `CF-Visitor` header with `"scheme":"https"`
 - `Front-End-Https: on`
@@ -19,10 +19,21 @@ The warning triggers based on the *absence* of headers a TLS-terminating proxy n
 
 ## What actually protects the password
 
-Only genuine end-to-end HTTPS does. Options, roughly in order of effort:
-1. **Cloudflare** (free tier is enough) in front of a domain you own, proxying to your server — real TLS between visitors and Cloudflare.
-2. Your own reverse proxy (Nginx/Apache/Caddy) terminating TLS with a certificate (e.g. via Let's Encrypt), forwarding to MapGate over `127.0.0.1` or a private network.
-3. If neither is available to you, treat this password the same as you'd treat anything sent over plain HTTP: fine for keeping casual/curious visitors out, not suitable for anything you actually consider sensitive.
+Genuine HTTPS does - though "genuine" comes in two flavors with different guarantees. Options, roughly in order of effort:
+1. **Cloudflare** (free tier is enough) in front of a domain you own, proxying to your server — real, CA-trusted TLS between visitors and Cloudflare, and no warning in visitors' browsers.
+2. Your own reverse proxy (Nginx/Apache/Caddy) terminating TLS with a CA-issued certificate (e.g. via Let's Encrypt), forwarding to MapGate over `127.0.0.1` or a private network. Same CA-trusted guarantee as Cloudflare.
+3. **MapGate's own `tls-enabled: true`** (self-signed, no extra infrastructure needed) — see below. Weaker than options 1-2, but much stronger than plain HTTP.
+4. If none of those are available to you, treat this password the same as you'd treat anything sent over plain HTTP: fine for keeping casual/curious visitors out, not suitable for anything you actually consider sensitive.
+
+## Self-signed TLS (`tls-enabled`)
+
+When you set `tls-enabled: true`, MapGate generates its own self-signed certificate (via the JDK's bundled `keytool`) and serves HTTPS directly - no reverse proxy or separate server needed. This is a genuinely different security level than plain HTTP, but it is **not equivalent to a CA-issued certificate**, and the difference matters:
+
+- **What it protects against:** passive eavesdropping. Anyone merely *observing* network traffic (a shared Wi-Fi network, an ISP, anyone with packet-capture access on the path) sees only encrypted bytes, not your password.
+- **What it does NOT protect against:** an *active* man-in-the-middle. Because the certificate isn't vouched for by a certificate authority, a browser can't distinguish your self-signed certificate from an attacker's own self-signed certificate presented in a MITM attack - both just say "trust me." Browsers reflect this honestly by showing a "not trusted"/"not private" warning that visitors must click through, every time they use a browser or device that hasn't seen this specific certificate before.
+- **How to actually verify it's really your server**, if that matters to you: compare the certificate's SHA-256 fingerprint (shown in your browser's certificate details) against the one printed in your server's console/log when MapGate generated it, communicated to visitors through some channel other than the connection itself (e.g. tell them in Discord). If those match, you've confirmed there's no MITM. Nothing does this comparison for you automatically.
+- The certificate and its password are generated once and reused across restarts (so visitors aren't asked to re-accept a new certificate every time the server restarts) unless you run `/mapgate regenerate-cert`, which forces a fresh one - after which, everyone will need to click through the warning again.
+- `tls-common-name` should match whatever hostname or IP visitors actually type into their browser. A mismatch adds a *second*, separate browser warning (hostname mismatch) on top of the untrusted-certificate one.
 
 ## IP allow/block lists and `trust-x-forwarded-for`
 

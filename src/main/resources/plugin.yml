@@ -7,7 +7,7 @@ description: Shared-password gate with cookie sessions in front of any unauthent
 commands:
   mapgate:
     description: Manage MapGate settings
-    usage: /<command> <setpassword <pass>|reload|sessions>
+    usage: /<command> <setpassword <pass>|reload|sessions|regenerate-cert>
     permission: mapgate.admin
 permissions:
   mapgate.admin:

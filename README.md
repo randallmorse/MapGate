@@ -33,6 +33,7 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 - Logout endpoint (`/mapgate/logout`)
 - Warns visitors on the login page if their connection doesn't look like it's coming through a secure (HTTPS-terminating) proxy — see [SECURITY.md](SECURITY.md)
 - IP allow-list (bypass the password entirely, e.g. for your own home/office IP) and block-list (always deny, HTTP 403) — block always wins if an address matches both
+- Optional self-signed HTTPS (`tls-enabled: true`) — MapGate generates and reuses its own certificate via the JDK's bundled `keytool`, no external tools needed. Encrypts against passive eavesdropping; still shows a browser trust warning since it's not CA-issued — see [SECURITY.md](SECURITY.md)
 - No external dependencies at runtime — uses only the JDK's built-in `com.sun.net.httpserver`
 - No database, no reverse proxy, no separate process to keep running
 
@@ -47,7 +48,8 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 3. Start the server once to generate `plugins/MapGate/config.yml`, then set `target-host`/`target-port` to match what you set in step 1 (see the config reference below).
 4. Set a real password — either edit `password` in `config.yml` and restart, or just run `/mapgate setpassword <password>` in console/in-game after the first start (takes effect immediately, no restart needed).
 5. Make sure `public-port` (default `8100`) is the port actually open/allocated in your host's firewall — this can be the same port number your service used to expose directly, so nothing changes for visitors except now seeing a login page first.
-6. Restart. Browse to `http://<your-server-ip>:<public-port>` — you should see a password prompt before reaching the actual service.
+6. *(Optional)* Set `tls-enabled: true` if you want visitors to reach MapGate over `https://` with a self-signed certificate instead of plain `http://` (encrypts against passive eavesdropping — see [SECURITY.md](SECURITY.md) for what it does and doesn't protect against). No certificate files to prepare yourself; MapGate generates one on first start.
+7. Restart. Browse to `http://<your-server-ip>:<public-port>` (or `https://` if you enabled TLS) — you should see a password prompt before reaching the actual service.
 
 ## Configuration (`plugins/MapGate/config.yml`)
 | Key | Default | Meaning |
@@ -63,6 +65,10 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 | `ip-block-list` | `[]` | IPs/CIDR ranges (e.g. `203.0.113.0/24`) always denied with a 403, checked before anything else. Wins over `ip-allow-list` if an address is on both. |
 | `ip-allow-list` | `[]` | IPs/CIDR ranges that bypass the password **entirely** — a real access-control bypass, use deliberately. |
 | `trust-x-forwarded-for` | `false` | Whether allow/block-list matching trusts the `X-Forwarded-For` header instead of the raw TCP connection address. Only safe if MapGate's public port is firewalled to reject direct connections from anyone but your trusted reverse proxy — see [SECURITY.md](SECURITY.md). |
+| `tls-enabled` | `false` | Serve HTTPS (self-signed) instead of HTTP on `public-port`. See [SECURITY.md](SECURITY.md) for what this does and doesn't protect against. |
+| `tls-common-name` | `localhost` | CN/SAN for the generated certificate — set to whatever hostname/IP visitors actually browse to, to avoid an extra hostname-mismatch warning. |
+| `tls-keystore-path` | `selfsigned-keystore.p12` | Where the generated keystore is stored, relative to `plugins/MapGate/`. |
+| `tls-keystore-password` | *(auto-generated)* | Filled in automatically the first time `tls-enabled` is turned on. Use `/mapgate regenerate-cert` to force a new certificate rather than clearing this by hand. |
 
 ## Commands
 | Command | Permission | Effect |
@@ -70,9 +76,11 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 | `/mapgate setpassword <pass>` | `mapgate.admin` (default: op) | Changes the password immediately, no restart needed. |
 | `/mapgate reload` | `mapgate.admin` | Reloads config and restarts MapGate's internal HTTP server. |
 | `/mapgate sessions` | `mapgate.admin` | Shows the number of currently active (unexpired) sessions. |
+| `/mapgate regenerate-cert` | `mapgate.admin` | Deletes and regenerates the self-signed TLS certificate (only relevant if `tls-enabled: true`). Visitors' browsers will need to re-accept the new certificate. |
 
 ## Security notes — read before relying on this
-- **This runs over plain HTTP unless you put something like Cloudflare in front of it.** The password and session cookie are sent unencrypted. Fine for casually keeping randoms out of a hobby server's map; not a substitute for real TLS if that matters to you. The login page shows a warning when it looks like there's no secure proxy in front — see [SECURITY.md](SECURITY.md) for exactly how that detection works and its limits.
+- **This runs over plain HTTP by default**, unless you either put something like Cloudflare in front of it or turn on `tls-enabled` for self-signed HTTPS. Plain HTTP means the password and session cookie are sent unencrypted — fine for casually keeping randoms out of a hobby server's map, not a substitute for real TLS if that matters to you. The login page shows a warning when it looks like there's no secure proxy (or self-signed TLS) in front — see [SECURITY.md](SECURITY.md) for exactly how that detection works and its limits.
+- **Self-signed TLS (`tls-enabled: true`) encrypts the connection but doesn't authenticate the server.** It stops passive eavesdropping (packet sniffing), but browsers will show a "not trusted" warning, and a determined active man-in-the-middle could still present their own self-signed certificate unless a visitor manually checks the certificate fingerprint. A CA-issued certificate (e.g. via Cloudflare or Let's Encrypt) doesn't have that gap.
 - **One shared password for everyone**, not per-user accounts. If you need access tied to individual Minecraft accounts/permissions, look at [Chicken/Auth](https://github.com/Chicken/Auth) instead (heavier: needs its own reverse proxy + database).
 - Sessions are **in-memory only** — they don't survive a server restart, and there's no persistent session store to worry about securing.
 - The reverse-proxy step buffers each response fully in memory before forwarding it — fine for typical BlueMap tile/asset sizes, not designed for heavy concurrent public traffic.

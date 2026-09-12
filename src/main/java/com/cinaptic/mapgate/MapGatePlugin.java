@@ -45,7 +45,7 @@ public final class MapGatePlugin extends JavaPlugin {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
-            sender.sendMessage("Usage: /mapgate <setpassword <pass>|reload|sessions>");
+            sender.sendMessage("Usage: /mapgate <setpassword <pass>|reload|sessions|regenerate-cert>");
             return true;
         }
 
@@ -70,7 +70,19 @@ public final class MapGatePlugin extends JavaPlugin {
                 int count = gateServer == null ? 0 : gateServer.activeSessionCount();
                 sender.sendMessage("Active MapGate sessions: " + count);
             }
-            default -> sender.sendMessage("Usage: /mapgate <setpassword <pass>|reload|sessions>");
+            case "regenerate-cert" -> {
+                if (!getConfig().getBoolean("tls-enabled", false)) {
+                    sender.sendMessage("tls-enabled is false - there's no certificate to regenerate.");
+                    return true;
+                }
+                stopGateServer();
+                SelfSignedTls.deleteKeystore(this);
+                reloadConfig();
+                startGateServer();
+                sender.sendMessage("MapGate's self-signed TLS certificate was regenerated. "
+                        + "Visitors' browsers will need to re-accept the new certificate.");
+            }
+            default -> sender.sendMessage("Usage: /mapgate <setpassword <pass>|reload|sessions|regenerate-cert>");
         }
         return true;
     }

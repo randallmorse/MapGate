@@ -75,3 +75,35 @@ ip-allow-list: []
 # spoofable by anyone who CAN connect directly, which would let them fake
 # their way onto the allow-list. See SECURITY.md.
 trust-x-forwarded-for: false
+
+# --- Optional self-signed TLS ---
+# When enabled, MapGate serves HTTPS instead of HTTP on public-port, using a
+# self-signed certificate it generates itself on first run (via the JDK's
+# bundled keytool - no external tools or manual OpenSSL steps needed). The
+# certificate and its keystore password are saved and reused across restarts,
+# so visitors don't have to re-accept a new "untrusted certificate" browser
+# warning every time the server restarts.
+#
+# This encrypts the connection against passive eavesdropping (e.g. someone
+# sniffing traffic on the same network), which plain HTTP does not. It does
+# NOT provide the same guarantee as a real (CA-issued) certificate: browsers
+# will show a "not trusted" warning, and a determined active
+# man-in-the-middle could present their own self-signed certificate unless a
+# visitor manually verifies the certificate fingerprint. See SECURITY.md.
+tls-enabled: false
+
+# Common Name / Subject Alternative Name for the generated certificate - set
+# this to whatever hostname or IP visitors actually type into their browser
+# (matching it avoids an extra hostname-mismatch warning on top of the
+# untrusted-certificate one).
+tls-common-name: "localhost"
+
+# Where the generated keystore is stored, relative to MapGate's own data
+# folder (plugins/MapGate/). Not normally something you need to change.
+tls-keystore-path: "selfsigned-keystore.p12"
+
+# Auto-generated and saved here the first time tls-enabled is turned on -
+# leave blank, MapGate fills this in itself. To force a brand new
+# certificate (e.g. after changing tls-common-name), use
+# /mapgate regenerate-cert instead of clearing this by hand.
+tls-keystore-password: ""
