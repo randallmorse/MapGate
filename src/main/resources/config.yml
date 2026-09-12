@@ -48,3 +48,30 @@ cookie-name: "mapgate_session"
 # in plain text, linking here. This is a best-effort notice only, not a
 # security control - see SECURITY.md in the project repo for why.
 insecure-connection-warning-url: "https://github.com/randallmorse/MapGate/blob/main/SECURITY.md"
+
+# --- IP allow/block lists ---
+# Each entry is a plain IP ("203.0.113.5") or a CIDR range ("203.0.113.0/24").
+# If an address matches both lists, the block-list always wins.
+
+# IPs that are always denied outright (HTTP 403), before anything else is
+# checked - even before the allow-list. Empty by default (nobody blocked).
+ip-block-list: []
+
+# IPs that bypass the password ENTIRELY and go straight through to the
+# proxied service - e.g. your own home/office IP, so you're never stuck
+# behind your own gate. This is a real access-control bypass, not a
+# convenience feature, so use it deliberately. Empty by default (no bypass
+# for anyone).
+ip-allow-list: []
+
+# The above two lists are matched against the actual TCP connection's source
+# address by default, which cannot be spoofed. If MapGate sits behind a
+# reverse proxy (e.g. Cloudflare) that connects to it locally, that address
+# will be the PROXY's IP instead of the real visitor's - breaking allow/block
+# matching. Set this to true to instead trust the X-Forwarded-For header for
+# that matching, but ONLY if you have made sure MapGate's public port cannot
+# be reached directly by anyone except that trusted proxy (e.g. via a
+# firewall rule allowing only the proxy's IPs) - this header is trivially
+# spoofable by anyone who CAN connect directly, which would let them fake
+# their way onto the allow-list. See SECURITY.md.
+trust-x-forwarded-for: false

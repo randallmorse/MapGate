@@ -32,6 +32,7 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 - Session cookie (`HttpOnly`, random 256-bit token) with configurable expiry
 - Logout endpoint (`/mapgate/logout`)
 - Warns visitors on the login page if their connection doesn't look like it's coming through a secure (HTTPS-terminating) proxy — see [SECURITY.md](SECURITY.md)
+- IP allow-list (bypass the password entirely, e.g. for your own home/office IP) and block-list (always deny, HTTP 403) — block always wins if an address matches both
 - No external dependencies at runtime — uses only the JDK's built-in `com.sun.net.httpserver`
 - No database, no reverse proxy, no separate process to keep running
 
@@ -59,6 +60,9 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 | `session-duration-hours` | `12` | How long a login lasts before the password is required again. |
 | `cookie-name` | `mapgate_session` | Name of the session cookie. |
 | `insecure-connection-warning-url` | this repo's `SECURITY.md` | Link shown in the login page's plain-HTTP warning banner (see [SECURITY.md](SECURITY.md)). |
+| `ip-block-list` | `[]` | IPs/CIDR ranges (e.g. `203.0.113.0/24`) always denied with a 403, checked before anything else. Wins over `ip-allow-list` if an address is on both. |
+| `ip-allow-list` | `[]` | IPs/CIDR ranges that bypass the password **entirely** — a real access-control bypass, use deliberately. |
+| `trust-x-forwarded-for` | `false` | Whether allow/block-list matching trusts the `X-Forwarded-For` header instead of the raw TCP connection address. Only safe if MapGate's public port is firewalled to reject direct connections from anyone but your trusted reverse proxy — see [SECURITY.md](SECURITY.md). |
 
 ## Commands
 | Command | Permission | Effect |

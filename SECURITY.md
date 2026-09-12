@@ -24,4 +24,12 @@ Only genuine end-to-end HTTPS does. Options, roughly in order of effort:
 2. Your own reverse proxy (Nginx/Apache/Caddy) terminating TLS with a certificate (e.g. via Let's Encrypt), forwarding to MapGate over `127.0.0.1` or a private network.
 3. If neither is available to you, treat this password the same as you'd treat anything sent over plain HTTP: fine for keeping casual/curious visitors out, not suitable for anything you actually consider sensitive.
 
+## IP allow/block lists and `trust-x-forwarded-for`
+
+`ip-allow-list` is a real access-control bypass — anyone matching it skips the password entirely. By default, matching is done against the actual TCP connection's source address, which **cannot be spoofed**: a client cannot make their own socket appear to originate from a different IP.
+
+If you enable `trust-x-forwarded-for: true` (for example, because MapGate sits behind Cloudflare or another reverse proxy that connects to it locally, and you want allow/block-listing to see the *original* visitor's IP instead of the proxy's), be aware that `X-Forwarded-For` is just an ordinary HTTP header. **Anyone who can connect directly to MapGate's public port can set this header to whatever they want** — including an IP from your allow-list — and walk straight past the password.
+
+This setting is only safe to enable if you have separately ensured MapGate's public port cannot be reached directly by anyone except your trusted proxy — for example, a firewall rule that only permits inbound connections to that port from your proxy's known IP ranges (Cloudflare publishes theirs). If you can't guarantee that, leave this `false` and accept that allow/block-listing will match your proxy's IP rather than visitors' real IPs.
+
 See the main [README](README.md#security-notes--read-before-relying-on-this) for the broader security model (single shared password vs. per-user auth, in-memory sessions, etc.).

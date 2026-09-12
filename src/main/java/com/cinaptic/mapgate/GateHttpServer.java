@@ -8,9 +8,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.List;
@@ -38,6 +40,9 @@ final class GateHttpServer {
     private final int targetPort;
     private final String insecureWarningUrl;
     private final String defaultPasswordMode;
+    private final List<String> ipAllowList;
+    private final List<String> ipBlockList;
+    private final boolean trustForwardedFor;
 
     GateHttpServer(MapGatePlugin plugin) throws IOException {
         this.plugin = plugin;
@@ -47,6 +52,9 @@ final class GateHttpServer {
         this.insecureWarningUrl = plugin.getConfig().getString("insecure-connection-warning-url",
                 "https://github.com/randallmorse/MapGate/blob/main/SECURITY.md");
         this.defaultPasswordMode = plugin.getConfig().getString("default-password-mode", "block");
+        this.ipAllowList = plugin.getConfig().getStringList("ip-allow-list");
+        this.ipBlockList = plugin.getConfig().getStringList("ip-block-list");
+        this.trustForwardedFor = plugin.getConfig().getBoolean("trust-x-forwarded-for", false);
         long durationHours = plugin.getConfig().getLong("session-duration-hours", 12);
         this.sessions = new SessionManager(durationHours * 3600);
 
@@ -71,6 +79,15 @@ final class GateHttpServer {
     }
 
     private void handleRoot(HttpExchange exchange) throws IOException {
+        InetAddress client = resolveClientAddress(exchange);
+        if (isBlocked(client)) {
+            sendForbidden(exchange);
+            return;
+        }
+        if (isAllowed(client)) {
+            proxy(exchange);
+            return;
+        }
         if (isUsingDefaultPassword() && !isDefaultPasswordAllowed()) {
             serveSetupRequiredPage(exchange);
             return;
@@ -84,6 +101,17 @@ final class GateHttpServer {
     }
 
     private void handleLogin(HttpExchange exchange) throws IOException {
+        InetAddress client = resolveClientAddress(exchange);
+        if (isBlocked(client)) {
+            sendForbidden(exchange);
+            return;
+        }
+        if (isAllowed(client)) {
+            exchange.getResponseHeaders().add("Location", "/");
+            exchange.sendResponseHeaders(302, -1);
+            exchange.close();
+            return;
+        }
         if (isUsingDefaultPassword() && !isDefaultPasswordAllowed()) {
             serveSetupRequiredPage(exchange);
             return;
@@ -109,12 +137,98 @@ final class GateHttpServer {
     }
 
     private void handleLogout(HttpExchange exchange) throws IOException {
+        if (isBlocked(resolveClientAddress(exchange))) {
+            sendForbidden(exchange);
+            return;
+        }
         String token = readCookie(exchange, cookieName);
         sessions.invalidate(token);
         exchange.getResponseHeaders().add("Set-Cookie", cookieName + "=deleted; Path=/; Max-Age=0");
         exchange.getResponseHeaders().add("Location", "/");
         exchange.sendResponseHeaders(302, -1);
         exchange.close();
+    }
+
+    /**
+     * The actual TCP peer address by default - not spoofable. Only trusts
+     * X-Forwarded-For (the leftmost/original-client entry) when
+     * trust-x-forwarded-for is explicitly enabled, which is only safe if
+     * MapGate's public port is firewalled to reject direct connections from
+     * anyone but the trusted reverse proxy setting that header - see
+     * SECURITY.md.
+     */
+    private InetAddress resolveClientAddress(HttpExchange exchange) {
+        if (trustForwardedFor) {
+            String forwardedFor = firstHeader(exchange, "X-Forwarded-For");
+            if (forwardedFor != null && !forwardedFor.isBlank()) {
+                try {
+                    return InetAddress.getByName(forwardedFor.split(",")[0].trim());
+                } catch (UnknownHostException ignored) {
+                    // fall through to the raw socket address
+                }
+            }
+        }
+        InetSocketAddress remote = exchange.getRemoteAddress();
+        return remote == null ? null : remote.getAddress();
+    }
+
+    private boolean isBlocked(InetAddress client) {
+        return client != null && matchesAny(client, ipBlockList);
+    }
+
+    private boolean isAllowed(InetAddress client) {
+        return client != null && matchesAny(client, ipAllowList);
+    }
+
+    private boolean matchesAny(InetAddress client, List<String> entries) {
+        for (String entry : entries) {
+            if (matchesCidr(client, entry)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Accepts a plain IP ("203.0.113.5") or CIDR range ("203.0.113.0/24"). Malformed entries never match. */
+    private boolean matchesCidr(InetAddress client, String entry) {
+        if (entry == null || entry.isBlank()) {
+            return false;
+        }
+        try {
+            String[] parts = entry.trim().split("/", 2);
+            InetAddress network = InetAddress.getByName(parts[0]);
+            byte[] clientBytes = client.getAddress();
+            byte[] networkBytes = network.getAddress();
+            if (clientBytes.length != networkBytes.length) {
+                return false; // one's IPv4, the other IPv6 - never matches
+            }
+            int prefixLength = parts.length == 2 ? Integer.parseInt(parts[1]) : clientBytes.length * 8;
+            int fullBytes = prefixLength / 8;
+            int remainingBits = prefixLength % 8;
+            for (int i = 0; i < fullBytes; i++) {
+                if (clientBytes[i] != networkBytes[i]) {
+                    return false;
+                }
+            }
+            if (remainingBits > 0) {
+                int mask = (0xFF << (8 - remainingBits)) & 0xFF;
+                if ((clientBytes[fullBytes] & mask) != (networkBytes[fullBytes] & mask)) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (Exception malformedEntry) {
+            return false;
+        }
+    }
+
+    private void sendForbidden(HttpExchange exchange) throws IOException {
+        byte[] bytes = "Forbidden".getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", "text/plain; charset=utf-8");
+        exchange.sendResponseHeaders(403, bytes.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(bytes);
+        }
     }
 
     private boolean isUsingDefaultPassword() {
