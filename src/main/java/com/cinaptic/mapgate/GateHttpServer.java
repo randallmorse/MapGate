@@ -37,6 +37,7 @@ final class GateHttpServer {
     private final String targetHost;
     private final int targetPort;
     private final String insecureWarningUrl;
+    private final String defaultPasswordMode;
 
     GateHttpServer(MapGatePlugin plugin) throws IOException {
         this.plugin = plugin;
@@ -45,6 +46,7 @@ final class GateHttpServer {
         this.targetPort = plugin.getConfig().getInt("target-port", 8101);
         this.insecureWarningUrl = plugin.getConfig().getString("insecure-connection-warning-url",
                 "https://github.com/randallmorse/MapGate/blob/main/SECURITY.md");
+        this.defaultPasswordMode = plugin.getConfig().getString("default-password-mode", "block");
         long durationHours = plugin.getConfig().getLong("session-duration-hours", 12);
         this.sessions = new SessionManager(durationHours * 3600);
 
@@ -69,7 +71,7 @@ final class GateHttpServer {
     }
 
     private void handleRoot(HttpExchange exchange) throws IOException {
-        if (isUsingDefaultPassword()) {
+        if (isUsingDefaultPassword() && !isDefaultPasswordAllowed()) {
             serveSetupRequiredPage(exchange);
             return;
         }
@@ -82,7 +84,7 @@ final class GateHttpServer {
     }
 
     private void handleLogin(HttpExchange exchange) throws IOException {
-        if (isUsingDefaultPassword()) {
+        if (isUsingDefaultPassword() && !isDefaultPasswordAllowed()) {
             serveSetupRequiredPage(exchange);
             return;
         }
@@ -119,6 +121,17 @@ final class GateHttpServer {
         return DEFAULT_PASSWORD.equals(plugin.getConfig().getString("password", ""));
     }
 
+    /**
+     * "block" (default): the setup-required page is shown and no session can
+     * ever be created while the password is still the default - fails closed.
+     * "warn": the default password is allowed to work (useful for local
+     * demos/dev), but the login page carries a persistent warning about it.
+     * This is an explicit opt-in the installer makes in config.yml.
+     */
+    private boolean isDefaultPasswordAllowed() {
+        return "warn".equalsIgnoreCase(defaultPasswordMode);
+    }
+
     private void serveSetupRequiredPage(HttpExchange exchange) throws IOException {
         String html = "<!doctype html><html><head><title>Map Not Yet Secured</title>"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
@@ -131,6 +144,8 @@ final class GateHttpServer {
                 + "<p><strong>If you are the server admin:</strong> run</p>"
                 + "<p><code>/mapgate setpassword &lt;your password&gt;</code></p>"
                 + "<p>in the server console, or in-game if you have op permission. It takes effect immediately - no restart needed.</p>"
+                + "<p>Alternatively, for local demos/development only, set <code>default-password-mode: warn</code> "
+                + "in <code>config.yml</code> to allow the default password to work with a visible warning instead of blocking it.</p>"
                 + "<p><strong>If you are not the admin:</strong> please contact them and ask them to secure this map before it can be used.</p>"
                 + "</div></body></html>";
         byte[] bytes = html.getBytes(StandardCharsets.UTF_8);
@@ -143,6 +158,15 @@ final class GateHttpServer {
 
     private void serveLoginPage(HttpExchange exchange, boolean failed) throws IOException {
         String errorHtml = failed ? "<p style=\"color:#f66\">Incorrect password.</p>" : "";
+        // Only reachable here at all when default-password-mode is "warn" (handleRoot/handleLogin
+        // otherwise redirect to the blocking setup-required page) - so no need to re-check the mode.
+        String defaultPasswordHtml = isUsingDefaultPassword() ? (
+                "<div style=\"background:#403820;border:1px solid #a85;border-radius:6px;"
+                + "padding:0.75em 1em;margin-bottom:1em;text-align:left;font-size:0.85em;line-height:1.4\">"
+                + "⚠ Still using MapGate's <strong>default password</strong> (allowed because "
+                + "<code>default-password-mode</code> is set to <code>warn</code>). Fine for a demo/dev "
+                + "instance - set a real password with <code>/mapgate setpassword</code> before this is exposed for real."
+                + "</div>") : "";
         String warningHtml = looksLikeSecureProxy(exchange) ? "" : (
                 "<div style=\"background:#402020;border:1px solid #a55;border-radius:6px;"
                 + "padding:0.75em 1em;margin-bottom:1em;text-align:left;font-size:0.85em;line-height:1.4\">"
@@ -161,7 +185,7 @@ final class GateHttpServer {
                 + "button{margin-top:1em;padding:0.5em 1.5em;border-radius:4px;border:none;"
                 + "background:#3a7;color:#fff;cursor:pointer}</style></head><body>"
                 + "<form method=\"POST\" action=\"/mapgate/login\">"
-                + "<h2>Enter Map Password</h2>" + warningHtml + errorHtml
+                + "<h2>Enter Map Password</h2>" + defaultPasswordHtml + warningHtml + errorHtml
                 + "<input type=\"password\" name=\"password\" autofocus>"
                 + "<br><button type=\"submit\">Enter</button></form></body></html>";
         byte[] bytes = html.getBytes(StandardCharsets.UTF_8);

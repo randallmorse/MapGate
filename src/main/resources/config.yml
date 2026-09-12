@@ -3,9 +3,19 @@
 # (preferred over editing this file, since that also works without a restart)
 #
 # NOTE: while this is still the literal default value below ("changeme"),
-# MapGate refuses to let anyone in at all and shows a setup-required page
-# instead - see the README.
+# MapGate's behavior is controlled by default-password-mode below - see the
+# README.
 password: "changeme"
+
+# What happens while `password` above is still the literal default ("changeme"):
+#   "block" (default) - fail closed. No one can log in; visitors see a
+#     setup-required page telling the admin to run /mapgate setpassword.
+#   "warn" - allow the default password to work as a real password (useful
+#     for local demos/dev), but show a persistent warning on the login page
+#     reminding whoever's looking at it to set a real password before this
+#     is exposed for real. This is an explicit opt-in - MapGate never allows
+#     the public default password to work silently.
+default-password-mode: "block"
 
 # --- Ports ---
 # MapGate sits BETWEEN visitors and the actual web service you're protecting

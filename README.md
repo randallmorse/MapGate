@@ -27,7 +27,7 @@ BlueMap has [no built-in authentication](https://github.com/BlueMap-Minecraft/Bl
 The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127.0.0.1` — it's not reachable from outside the machine at all, even if a firewall rule is misconfigured. MapGate is the only thing actually exposed publicly, and it only forwards requests that carry a valid session cookie.
 
 ## Features
-- Refuses to work while the password is still the packaged default (`changeme`) — shows an interstitial explaining how an admin (`mapgate.admin`/op) can fix it via `/mapgate setpassword`, instead of ever letting the public default password actually grant access
+- Fails closed while the password is still the packaged default (`changeme`) by default — shows an interstitial explaining how an admin (`mapgate.admin`/op) can fix it via `/mapgate setpassword`. Installs that want the default password to actually work (local demos/dev only) can opt into that explicitly with `default-password-mode: warn`, which shows a persistent warning on the login page instead of blocking it
 - Single shared password, changeable in-game with no restart (`/mapgate setpassword <pass>`)
 - Session cookie (`HttpOnly`, random 256-bit token) with configurable expiry
 - Logout endpoint (`/mapgate/logout`)
@@ -51,7 +51,8 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 ## Configuration (`plugins/MapGate/config.yml`)
 | Key | Default | Meaning |
 |---|---|---|
-| `password` | `changeme` | The shared password. Prefer changing it via `/mapgate setpassword` in-game/console instead of editing this file. While it's still the literal default, MapGate blocks all access and shows a setup-required page instead (see Features). |
+| `password` | `changeme` | The shared password. Prefer changing it via `/mapgate setpassword` in-game/console instead of editing this file. What happens while it's still the literal default is controlled by `default-password-mode` below. |
+| `default-password-mode` | `block` | `block` (fail closed — no one can log in while the password is still the default; visitors see a setup-required page) or `warn` (allow the default password to work, for local demos/dev, with a persistent warning shown on the login page). |
 | `target-host` | `127.0.0.1` | Where the backend service you're protecting (BlueMap, Dynmap, etc.) is actually listening. |
 | `target-port` | `8101` | The backend service's internal (localhost-only) port. Must match whatever you set in *that* service's own config. |
 | `public-port` | `8100` | The port MapGate itself listens on — the one you expose/open in your firewall, and the one visitors actually browse to. |
