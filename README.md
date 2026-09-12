@@ -70,6 +70,28 @@ The backend service (BlueMap, Dynmap, etc.) is reconfigured to bind only to `127
 | `tls-keystore-path` | `selfsigned-keystore.p12` | Where the generated keystore is stored, relative to `plugins/MapGate/`. |
 | `tls-keystore-password` | *(auto-generated)* | Filled in automatically the first time `tls-enabled` is turned on. Use `/mapgate regenerate-cert` to force a new certificate rather than clearing this by hand. |
 
+## Using your own certificate instead of self-signed (⚠ unconfirmed)
+
+> **Status: unconfirmed / untested.** This follows directly from how `tls-keystore-path` and `tls-keystore-password` are implemented (MapGate only auto-generates a certificate when the keystore file is missing *or* the password is blank — otherwise it just loads what's there), but nobody has actually run this end-to-end yet with a real certificate. Treat it as a starting point to try, not a verified guide. If you do try it, consider [opening an issue](https://github.com/randallmorse/MapGate/issues) with how it went either way.
+
+If you have (or can obtain) a real, CA-issued certificate, you should be able to use it instead of letting MapGate self-sign one:
+
+1. Obtain a certificate as a PEM `fullchain.pem` + `privkey.pem` pair (e.g. via Let's Encrypt/certbot, or one you purchased).
+2. Convert it to a PKCS12 keystore, since that's the format MapGate expects:
+   ```sh
+   openssl pkcs12 -export -in fullchain.pem -inkey privkey.pem \
+     -out real-cert.p12 -name mapgate -passout pass:<choose-a-password>
+   ```
+3. Place `real-cert.p12` inside `plugins/MapGate/`, then set in `config.yml`:
+   ```yaml
+   tls-enabled: true
+   tls-keystore-path: "real-cert.p12"
+   tls-keystore-password: "<the password you chose above>"
+   ```
+4. Restart (or `/mapgate reload`).
+
+**Known gap even if this works:** Let's Encrypt-style certificates expire roughly every 90 days and need automated renewal. Nothing in MapGate currently detects a renewed certificate file and reloads on its own — you'd need to trigger `/mapgate reload` yourself after each renewal (e.g. a certbot renewal hook script that runs the command over RCON). A longer-lived purchased certificate sidesteps that, at the cost of not being free.
+
 ## Commands
 | Command | Permission | Effect |
 |---|---|---|

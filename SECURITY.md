@@ -35,6 +35,8 @@ When you set `tls-enabled: true`, MapGate generates its own self-signed certific
 - The certificate and its password are generated once and reused across restarts (so visitors aren't asked to re-accept a new certificate every time the server restarts) unless you run `/mapgate regenerate-cert`, which forces a fresh one - after which, everyone will need to click through the warning again.
 - `tls-common-name` should match whatever hostname or IP visitors actually type into their browser. A mismatch adds a *second*, separate browser warning (hostname mismatch) on top of the untrusted-certificate one.
 
+If you'd rather avoid the untrusted-certificate warning entirely, MapGate can also load a real CA-issued certificate instead of self-signing one — see [Using your own certificate](README.md#using-your-own-certificate-instead-of-self-signed--unconfirmed) in the README (currently unconfirmed/untested).
+
 ## IP allow/block lists and `trust-x-forwarded-for`
 
 `ip-allow-list` is a real access-control bypass — anyone matching it skips the password entirely. By default, matching is done against the actual TCP connection's source address, which **cannot be spoofed**: a client cannot make their own socket appear to originate from a different IP.
